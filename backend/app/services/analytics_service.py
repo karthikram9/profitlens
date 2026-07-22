@@ -4,6 +4,11 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func, case, desc, asc, text
 
 from app.db.models import Order
+from app.core.risk_constants import (
+    RISK_TIER_HIGH_THRESHOLD,
+    RISK_TIER_MEDIUM_THRESHOLD,
+    MIN_HEATMAP_ORDER_COUNT,
+)
 from app.models.analytics import (
     # Module 5 Overview
     OverviewKPIs, KPIData, TrendPoint, CategoryPerformance,
@@ -12,6 +17,9 @@ from app.models.analytics import (
     CategoryProfitRow, CostItem, CostBreakdown, ProfitTrendPoint,
     InventoryCandidate, InventoryOpportunity, ProfitOverviewResponse,
     ProductRow, ProductsResponse,
+    # Module 7 Return Risk & Recommendations
+    TierCounts, RiskyCategoryRow, RiskyStateRow, HeatmapCell,
+    RiskOverviewResponse, RiskOrderRow, RiskOrdersResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -585,3 +593,213 @@ def get_products_paginated(
         page=page,
         pageSize=page_size,
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MODULE 7 — Return Risk functions
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def get_risk_overview(db: Session, upload_id: str) -> RiskOverviewResponse:
+    """
+    Computes summary metrics for Merchant-fulfilled scored rows vs Amazon-fulfilled unscored rows,
+    tier breakdown (High >= 0.5, Medium 0.2..0.5, Low < 0.2), top risky categories/states (orderCount >= 5),
+    and heatmap grid (Category x State, suppressing cells with orderCount < 5).
+    """
+    # 1. Scored vs Unscored counts & Tier breakdown (Merchant-fulfilled scored only)
+    counts_row = db.query(
+        func.count(Order.id).label("total_orders"),
+        func.sum(case((Order.risk_probability.isnot(None), 1), else_=0)).label("scored_count"),
+        func.sum(case((Order.risk_probability.is_(None), 1), else_=0)).label("unscored_count"),
+        func.sum(case((Order.risk_probability >= RISK_TIER_HIGH_THRESHOLD, 1), else_=0)).label("high_count"),
+        func.sum(case(((Order.risk_probability < RISK_TIER_HIGH_THRESHOLD) & (Order.risk_probability >= RISK_TIER_MEDIUM_THRESHOLD), 1), else_=0)).label("medium_count"),
+        func.sum(case(((Order.risk_probability < RISK_TIER_MEDIUM_THRESHOLD) & Order.risk_probability.isnot(None), 1), else_=0)).label("low_count"),
+        func.avg(Order.risk_probability).label("avg_risk"),
+    ).filter(Order.upload_id == upload_id).first()
+
+    scored_count = int(counts_row.scored_count or 0) if counts_row else 0
+    unscored_count = int(counts_row.unscored_count or 0) if counts_row else 0
+    high_count = int(counts_row.high_count or 0) if counts_row else 0
+    medium_count = int(counts_row.medium_count or 0) if counts_row else 0
+    low_count = int(counts_row.low_count or 0) if counts_row else 0
+    avg_risk = float(counts_row.avg_risk or 0.0) if counts_row else 0.0
+
+    tier_counts = TierCounts(high=high_count, medium=medium_count, low=low_count)
+
+    # 2. Top Risky Categories (Merchant-fulfilled, orderCount >= 5)
+    cat_rows = db.query(
+        Order.category,
+        func.avg(Order.risk_probability).label("avg_risk"),
+        func.count(Order.id).label("order_count"),
+    ).filter(
+        Order.upload_id == upload_id,
+        Order.risk_probability.isnot(None),
+        Order.category.isnot(None),
+    ).group_by(Order.category).having(
+        func.count(Order.id) >= MIN_HEATMAP_ORDER_COUNT
+    ).order_by(desc("avg_risk")).limit(5).all()
+
+    top_risky_categories = [
+        RiskyCategoryRow(
+            category=r.category,
+            avgRisk=round(float(r.avg_risk or 0.0), 4),
+            orderCount=int(r.order_count),
+        )
+        for r in cat_rows
+    ]
+
+    # 3. Top Risky States (Merchant-fulfilled, orderCount >= 5)
+    state_rows = db.query(
+        Order.ship_state,
+        func.avg(Order.risk_probability).label("avg_risk"),
+        func.count(Order.id).label("order_count"),
+    ).filter(
+        Order.upload_id == upload_id,
+        Order.risk_probability.isnot(None),
+        Order.ship_state.isnot(None),
+    ).group_by(Order.ship_state).having(
+        func.count(Order.id) >= MIN_HEATMAP_ORDER_COUNT
+    ).order_by(desc("avg_risk")).limit(5).all()
+
+    top_risky_states = [
+        RiskyStateRow(
+            state=r.ship_state,
+            avgRisk=round(float(r.avg_risk or 0.0), 4),
+            orderCount=int(r.order_count),
+        )
+        for r in state_rows
+    ]
+
+    # 4. Heatmap grid (Category x State) for Merchant-fulfilled orders
+    heatmap_rows = db.query(
+        Order.category,
+        Order.ship_state,
+        func.avg(Order.risk_probability).label("avg_risk"),
+        func.count(Order.id).label("order_count"),
+    ).filter(
+        Order.upload_id == upload_id,
+        Order.risk_probability.isnot(None),
+        Order.category.isnot(None),
+        Order.ship_state.isnot(None),
+    ).group_by(Order.category, Order.ship_state).all()
+
+    heatmap_cells = []
+    for r in heatmap_rows:
+        cnt = int(r.order_count)
+        insufficient = (cnt < MIN_HEATMAP_ORDER_COUNT)
+        heatmap_cells.append(HeatmapCell(
+            category=r.category,
+            state=r.ship_state,
+            avgRisk=round(float(r.avg_risk or 0.0), 4),
+            orderCount=cnt,
+            insufficientData=insufficient,
+        ))
+
+    return RiskOverviewResponse(
+        tierCounts=tier_counts,
+        avgRiskProbability=round(avg_risk, 4),
+        scoredOrderCount=scored_count,
+        unscoredOrderCount=unscored_count,
+        topRiskyCategories=top_risky_categories,
+        topRiskyStates=top_risky_states,
+        heatmap=heatmap_cells,
+    )
+
+
+def get_risk_orders_paginated(
+    db: Session,
+    upload_id: str,
+    page: int = 1,
+    page_size: int = 20,
+    sort_by: str = "riskProbability",
+    sort_order: str = "desc",
+    search: Optional[str] = None,
+    category: Optional[str] = None,
+    state: Optional[str] = None,
+    tier: Optional[str] = None,
+) -> RiskOrdersResponse:
+    """
+    SQL-level paginated query for risk orders.
+    Applies filters (search, category, state, tier) at the SQL layer.
+    Includes used_fallback boolean field.
+    """
+    page = max(1, page)
+    page_size = min(max(1, page_size), 100)
+
+    q = db.query(Order).filter(
+        Order.upload_id == upload_id,
+        Order.risk_probability.isnot(None),
+    )
+
+    if search:
+        pattern = f"%{search}%"
+        q = q.filter(
+            (Order.order_id.ilike(pattern)) |
+            (Order.category.ilike(pattern)) |
+            (Order.ship_state.ilike(pattern))
+        )
+
+    if category:
+        q = q.filter(Order.category == category)
+
+    if state:
+        q = q.filter(Order.ship_state == state)
+
+    if tier:
+        tier_lower = tier.lower()
+        if tier_lower == "high":
+            q = q.filter(Order.risk_probability >= RISK_TIER_HIGH_THRESHOLD)
+        elif tier_lower == "medium":
+            q = q.filter(
+                Order.risk_probability < RISK_TIER_HIGH_THRESHOLD,
+                Order.risk_probability >= RISK_TIER_MEDIUM_THRESHOLD,
+            )
+        elif tier_lower == "low":
+            q = q.filter(Order.risk_probability < RISK_TIER_MEDIUM_THRESHOLD)
+
+    # Sorting
+    if sort_by == "amount":
+        sort_col = Order.amount
+    elif sort_by == "category":
+        sort_col = Order.category
+    elif sort_by == "shipState":
+        sort_col = Order.ship_state
+    else:  # default riskProbability
+        sort_col = Order.risk_probability
+
+    order_expr = desc(sort_col) if sort_order == "desc" else asc(sort_col)
+    q = q.order_by(order_expr)
+
+    total = q.count()
+    rows = q.offset((page - 1) * page_size).limit(page_size).all()
+
+    risk_rows = []
+    for r in rows:
+        prob = float(r.risk_probability) if r.risk_probability is not None else None
+        if prob is not None:
+            if prob >= RISK_TIER_HIGH_THRESHOLD:
+                t_label = "High"
+            elif prob >= RISK_TIER_MEDIUM_THRESHOLD:
+                t_label = "Medium"
+            else:
+                t_label = "Low"
+        else:
+            t_label = "Unscored"
+
+        risk_rows.append(RiskOrderRow(
+            id=str(r.id),
+            orderId=r.order_id,
+            category=r.category,
+            amount=round(float(r.amount or 0), 2),
+            shipState=r.ship_state,
+            riskProbability=round(prob, 4) if prob is not None else None,
+            riskTier=t_label,
+            usedFallback=bool(r.used_fallback or False),
+        ))
+
+    return RiskOrdersResponse(
+        rows=risk_rows,
+        totalRows=total,
+        page=page,
+        pageSize=page_size,
+    )
+

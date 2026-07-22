@@ -98,3 +98,67 @@ class ProductsResponse(BaseModel):
     totalRows: int
     page: int
     pageSize: int
+
+
+# ── Module 7 — Return Risk & Recommendations models ────────────────────────
+
+class TierCounts(BaseModel):
+    high: int
+    medium: int
+    low: int
+
+class RiskyCategoryRow(BaseModel):
+    category: str
+    avgRisk: float
+    orderCount: int
+
+class RiskyStateRow(BaseModel):
+    state: str
+    avgRisk: float
+    orderCount: int
+
+class HeatmapCell(BaseModel):
+    category: str
+    state: str
+    avgRisk: float
+    orderCount: int
+    insufficientData: bool
+
+class RiskOverviewResponse(BaseModel):
+    tierCounts: TierCounts
+    avgRiskProbability: float
+    scoredOrderCount: int
+    unscoredOrderCount: int
+    topRiskyCategories: List[RiskyCategoryRow]
+    topRiskyStates: List[RiskyStateRow]
+    heatmap: List[HeatmapCell]
+
+class RiskOrderRow(BaseModel):
+    id: str
+    orderId: Optional[str]
+    category: Optional[str]
+    amount: float
+    shipState: Optional[str]
+    riskProbability: Optional[float]
+    riskTier: str
+    usedFallback: bool
+
+class RiskOrdersResponse(BaseModel):
+    rows: List[RiskOrderRow]
+    totalRows: int
+    page: int
+    pageSize: int
+
+class RecommendationItem(BaseModel):
+    id: str
+    category: str
+    reason: str
+    evidence: str
+    businessImpact: str
+    suggestedAction: str
+    priority: str  # "High" or "Medium"
+    expectedImprovement: str
+
+class RecommendationsResponse(BaseModel):
+    recommendations: List[RecommendationItem]
+

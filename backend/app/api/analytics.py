@@ -3,12 +3,18 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.api.uploads import get_current_user
 from app.db.models import User, Upload
-from app.models.analytics import OverviewResponse, ProfitOverviewResponse, ProductsResponse
+from app.models.analytics import (
+    OverviewResponse, ProfitOverviewResponse, ProductsResponse,
+    RiskOverviewResponse, RiskOrdersResponse, RecommendationsResponse,
+)
 from app.services.analytics_service import (
     get_dashboard_overview,
     get_profit_overview,
     get_products_paginated,
+    get_risk_overview,
+    get_risk_orders_paginated,
 )
+from app.services.recommendation_service import generate_recommendations
 from typing import Optional
 import logging
 
@@ -97,3 +103,79 @@ def get_products_endpoint(
     except Exception as e:
         logger.error(f"Error generating products for upload {upload.id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to generate products data.")
+
+
+# ── Module 7 ─────────────────────────────────────────────────────────────────
+
+@router.get("/risk-overview", response_model=RiskOverviewResponse)
+def get_risk_overview_endpoint(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Returns summary statistics, tier counts, top risky categories/states,
+    and heatmap cell grid for Merchant-fulfilled orders.
+    """
+    upload = _get_ready_upload(db, current_user)
+    try:
+        return get_risk_overview(db, str(upload.id))
+    except Exception as e:
+        logger.error(f"Error generating risk overview for upload {upload.id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to generate risk overview.")
+
+
+@router.get("/risk-orders", response_model=RiskOrdersResponse)
+def get_risk_orders_endpoint(
+    page: int = Query(default=1, ge=1),
+    pageSize: int = Query(default=20, ge=1, le=100),
+    sortBy: str = Query(default="riskProbability", pattern="^(riskProbability|amount|category|shipState)$"),
+    sortOrder: str = Query(default="desc", pattern="^(asc|desc)$"),
+    search: Optional[str] = Query(default=None, max_length=100),
+    category: Optional[str] = Query(default=None),
+    state: Optional[str] = Query(default=None),
+    tier: Optional[str] = Query(default=None, pattern="^(high|medium|low)$"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    SQL-level paginated, sortable, searchable risk order analytics.
+    Filterable by category, state, search query, or risk tier (high|medium|low).
+    Includes usedFallback flag for low confidence warnings.
+    """
+    upload = _get_ready_upload(db, current_user)
+    try:
+        return get_risk_orders_paginated(
+            db=db,
+            upload_id=str(upload.id),
+            page=page,
+            page_size=pageSize,
+            sort_by=sortBy,
+            sort_order=sortOrder,
+            search=search,
+            category=category,
+            state=state,
+            tier=tier,
+        )
+    except Exception as e:
+        logger.error(f"Error generating risk orders for upload {upload.id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to generate risk orders data.")
+
+
+@router.get("/recommendations", response_model=RecommendationsResponse)
+def get_recommendations_endpoint(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Returns rule-based, deterministic recommendations for categories with high return risk.
+    Each item contains all 6 fields (reason, evidence, businessImpact, suggestedAction, priority, expectedImprovement).
+    Expected improvement is grounded in historical return losses (₹140 * return count gap).
+    """
+    upload = _get_ready_upload(db, current_user)
+    try:
+        recs = generate_recommendations(db, str(upload.id))
+        return RecommendationsResponse(recommendations=recs)
+    except Exception as e:
+        logger.error(f"Error generating recommendations for upload {upload.id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to generate recommendations.")
+
