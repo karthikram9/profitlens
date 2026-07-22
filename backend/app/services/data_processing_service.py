@@ -70,36 +70,58 @@ def _normalise_category(series: pd.Series) -> pd.Series:
     return series.apply(_norm)
 
 
-def _compute_shipping_cost(row: pd.Series) -> float:
-    """Tiered shipping logic ported from feature_engineering.py."""
+def _get_val(assumptions: Any, key: str, default_val: Any) -> Any:
+    if not assumptions:
+        return default_val
+    if isinstance(assumptions, dict):
+        return assumptions.get(key, default_val)
+    return getattr(assumptions, key, default_val)
+
+
+def _compute_shipping_cost(row: pd.Series, shipping_tiers: List[Dict[str, Any]] = None) -> float:
+    """Tiered shipping logic based on configurable shipping_tiers."""
     status = str(row.get("status", "")).strip()
     if CANCELLED_STATUS_PATTERN.search(status):
         return TIERED_SHIPPING_CANCELLED
     amount = float(row.get("amount", 0) or 0)
-    if amount < 500:
-        return TIERED_SHIPPING_LOW
-    elif amount < 1000:
-        return TIERED_SHIPPING_MID
-    else:
-        return TIERED_SHIPPING_HIGH
+
+    if not shipping_tiers:
+        if amount < 500:
+            return TIERED_SHIPPING_LOW
+        elif amount < 1000:
+            return TIERED_SHIPPING_MID
+        else:
+            return TIERED_SHIPPING_HIGH
+
+    # Evaluate tiers ordered by maxAmount
+    sorted_tiers = sorted(
+        shipping_tiers,
+        key=lambda t: t.get("maxAmount") if t.get("maxAmount") is not None else float("inf")
+    )
+    for tier in sorted_tiers:
+        max_amt = tier.get("maxAmount")
+        fee = float(tier.get("fee", 0))
+        if max_amt is None or amount < float(max_amt):
+            return fee
+    return float(sorted_tiers[-1].get("fee", 0)) if sorted_tiers else 0.0
 
 
-def _compute_gst(row: pd.Series) -> float:
-    """Tiered GST: 5% if price per unit <= ₹2,500, else 18%."""
+def _compute_gst(row: pd.Series, low_rate: float = 0.05, threshold: float = 2500.0, high_rate: float = 0.18) -> float:
+    """Tiered GST: low_rate if price per unit <= threshold, else high_rate."""
     amount = float(row.get("amount", 0) or 0)
     qty = int(row.get("qty", 1) or 1)
     if qty <= 0:
         qty = 1
     price_per_unit = amount / qty
-    rate = 0.05 if price_per_unit <= 2500 else 0.18
+    rate = low_rate if price_per_unit <= threshold else high_rate
     return amount * rate
 
 
-def _compute_return_loss(status: str) -> float:
-    """Return ₹140 for returned/rejected orders, else 0."""
+def _compute_return_loss(status: str, return_loss_amount: float = 140.0) -> float:
+    """Return return_loss_amount for returned/rejected orders, else 0."""
     if pd.isna(status):
         return 0.0
-    return RETURN_LOSS_INR if RETURN_STATUS_PATTERN.search(str(status)) else 0.0
+    return float(return_loss_amount) if RETURN_STATUS_PATTERN.search(str(status)) else 0.0
 
 
 def _compute_return_flag(status: str) -> int:
@@ -139,6 +161,7 @@ def process_dataframe(
     df: pd.DataFrame,
     upload_id: str,
     user_id: str,
+    assumptions: Any = None,
 ) -> Dict:
     """
     Clean, enrich, and compute financial metrics for a mapped DataFrame.
@@ -196,11 +219,19 @@ def process_dataframe(
         df["category"] = _normalise_category(df["category"])
 
     # ── 5. Financial metrics ───────────────────────────────────────────────────
-    df["estimated_cogs"] = df["amount"] * COGS_RATE
-    df["platform_fee"] = df["amount"] * PLATFORM_FEE_RATE
-    df["gst"] = df.apply(_compute_gst, axis=1)
-    df["shipping_cost"] = df.apply(_compute_shipping_cost, axis=1)
-    df["return_loss"] = df["status"].apply(_compute_return_loss)
+    cogs_rate = float(_get_val(assumptions, "cogs_percent", 60.0)) / 100.0
+    fee_rate = float(_get_val(assumptions, "platform_fee_percent", 10.0)) / 100.0
+    gst_low = float(_get_val(assumptions, "gst_low_rate", 5.0)) / 100.0
+    gst_thresh = float(_get_val(assumptions, "gst_low_threshold", 2500.0))
+    gst_high = float(_get_val(assumptions, "gst_high_rate", 18.0)) / 100.0
+    ship_tiers = _get_val(assumptions, "shipping_tiers", None)
+    ret_loss = float(_get_val(assumptions, "return_loss_amount", 140.0))
+
+    df["estimated_cogs"] = df["amount"] * cogs_rate
+    df["platform_fee"] = df["amount"] * fee_rate
+    df["gst"] = df.apply(lambda r: _compute_gst(r, low_rate=gst_low, threshold=gst_thresh, high_rate=gst_high), axis=1)
+    df["shipping_cost"] = df.apply(lambda r: _compute_shipping_cost(r, shipping_tiers=ship_tiers), axis=1)
+    df["return_loss"] = df["status"].apply(lambda s: _compute_return_loss(s, return_loss_amount=ret_loss))
     df["estimated_profit"] = (
         df["amount"]
         - df["estimated_cogs"]

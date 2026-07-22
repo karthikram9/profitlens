@@ -13,12 +13,18 @@ from app.ml.predictor import model_loaded, load_error
 from app.api.auth import router as auth_router
 from app.api.uploads import router as uploads_router
 from app.api.analytics import router as analytics_router
+from app.api.settings import router as settings_router
+from app.api.export import router as export_router
+from app.api.data_health import router as data_health_router
 
 app = FastAPI(title="ProfitLens API", version="1.0.0")
 
 app.include_router(auth_router, prefix="/auth", tags=["auth"])
 app.include_router(uploads_router, prefix="/uploads", tags=["uploads"])
 app.include_router(analytics_router, prefix="/analytics", tags=["analytics"])
+app.include_router(settings_router, prefix="/settings", tags=["settings"])
+app.include_router(export_router, prefix="/export", tags=["export"])
+app.include_router(data_health_router, prefix="/data-health", tags=["data-health"])
 
 
 # CORS middleware configuration to allow frontend origin

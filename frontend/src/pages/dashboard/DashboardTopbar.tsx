@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../lib/auth-context';
 import { useDashboard } from '../../lib/dashboard-context';
-import { UploadCloud, User as UserIcon, LogOut } from 'lucide-react';
+import { UploadCloud, User as UserIcon, LogOut, Settings, Download } from 'lucide-react';
 import { Button } from '../../components/ui/Button';
 
 export const DashboardTopbar: React.FC = () => {
@@ -66,6 +66,22 @@ export const DashboardTopbar: React.FC = () => {
                 <p className="text-xs text-text-muted">Seller Account</p>
               </div>
               
+              <button
+                onClick={() => { setIsMenuOpen(false); navigate('/dashboard/settings'); }}
+                className="w-full text-left px-md py-sm text-sm text-text-primary hover:bg-bg transition-colors flex items-center gap-sm"
+              >
+                <Settings size={16} />
+                Settings
+              </button>
+              
+              <button
+                onClick={() => { setIsMenuOpen(false); navigate('/dashboard/export'); }}
+                className="w-full text-left px-md py-sm text-sm text-text-primary hover:bg-bg transition-colors flex items-center gap-sm"
+              >
+                <Download size={16} />
+                Export Reports
+              </button>
+
               <button
                 onClick={handleLogout}
                 className="w-full text-left px-md py-sm text-sm text-danger hover:bg-bg transition-colors flex items-center gap-sm"

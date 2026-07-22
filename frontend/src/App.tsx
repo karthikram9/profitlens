@@ -11,7 +11,10 @@ import { OverviewTab } from './pages/dashboard/tabs/OverviewTab';
 import { ProfitAnalyticsTab } from './pages/dashboard/tabs/ProfitAnalyticsTab';
 import { ReturnRiskTab } from './pages/dashboard/tabs/ReturnRiskTab';
 import { RecommendationsTab } from './pages/dashboard/tabs/RecommendationsTab';
+import { DataHealthTab } from './pages/dashboard/tabs/DataHealthTab';
 import { PlaceholderTab } from './pages/dashboard/PlaceholderTab';
+import { SettingsPage } from './pages/settings/SettingsPage';
+import { ExportPage } from './pages/export/ExportPage';
 import { DashboardProvider } from './lib/dashboard-context';
 import { ToastContainer } from './components/ui/Toast';
 
@@ -41,7 +44,9 @@ function App() {
             <Route path="products" element={<PlaceholderTab title="Products" description="Analyze performance at the individual SKU level." />} />
             <Route path="geography" element={<PlaceholderTab title="Geography" description="Visualize your sales and profitability across regions." />} />
             <Route path="recommendations" element={<RecommendationsTab />} />
-            <Route path="health" element={<PlaceholderTab title="Data Health" description="Monitor the quality and mapping of your uploaded data." />} />
+            <Route path="health" element={<DataHealthTab />} />
+            <Route path="settings" element={<SettingsPage />} />
+            <Route path="export" element={<ExportPage />} />
           </Route>
 
           {/* Catch-all */}

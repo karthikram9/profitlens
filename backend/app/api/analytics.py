@@ -179,3 +179,50 @@ def get_recommendations_endpoint(
         logger.error(f"Error generating recommendations for upload {upload.id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to generate recommendations.")
 
+
+@router.get("/data-health")
+def get_data_health_endpoint(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Returns data health and data quality metadata for the current user's ready upload.
+    Includes completeness score (processed / raw * 100) and raw exclusion reasons.
+    """
+    import json
+    upload = _get_ready_upload(db, current_user)
+
+    meta = {}
+    if upload.error_message and upload.error_message.startswith("{"):
+        try:
+            meta = json.loads(upload.error_message)
+        except Exception:
+            pass
+
+    raw_count = upload.row_count_raw or 0
+    proc_count = upload.row_count_processed or 0
+    excl_count = upload.row_count_excluded or 0
+
+    completeness_score = round((proc_count / raw_count * 100.0), 2) if raw_count > 0 else 100.0
+
+    exclusion_reasons_dict = meta.get("exclusion_reasons", {})
+    exclusion_reasons = [{"reason": k, "count": v} for k, v in exclusion_reasons_dict.items() if v > 0]
+
+    return {
+        "uploadId": str(upload.id),
+        "originalFilename": upload.original_filename,
+        "marketplaceDetected": upload.marketplace_detected,
+        "detectionConfidence": upload.detection_confidence,
+        "rowCountRaw": raw_count,
+        "rowCountProcessed": proc_count,
+        "rowCountExcluded": excl_count,
+        "completenessScore": completeness_score,
+        "exclusionReasons": exclusion_reasons,
+        "categoriesFound": meta.get("categories_found", []),
+        "dateMin": meta.get("date_min"),
+        "dateMax": meta.get("date_max"),
+        "uploadedAt": upload.uploaded_at.isoformat() if upload.uploaded_at else None,
+        "processedAt": upload.processed_at.isoformat() if upload.processed_at else None,
+    }
+
+

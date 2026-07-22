@@ -435,3 +435,22 @@ def get_upload_summary(
         uploadedAt=upload_record.uploaded_at.isoformat(),
         processedAt=upload_record.processed_at.isoformat() if upload_record.processed_at else None,
     )
+
+
+# ── POST /uploads/{uploadId}/recompute ─────────────────────────────────────────
+@router.post("/{upload_id}/recompute")
+def trigger_recompute(
+    upload_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    from app.services.settings_service import recompute_user_upload
+    try:
+        res = recompute_user_upload(db, str(current_user.id), upload_id)
+        return res
+    except ValueError as val_err:
+        raise HTTPException(status_code=400, detail=str(val_err))
+    except Exception as exc:
+        logger.error("recompute_endpoint_failed upload_id=%s err=%s", upload_id, exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Recompute failed: {exc}")
+

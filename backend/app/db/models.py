@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 from sqlalchemy import Column, String, DateTime, ForeignKey, Float, Integer, Boolean, Date
-from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID, JSONB
 from sqlalchemy.orm import relationship
 from app.db.session import Base
 
@@ -23,6 +23,7 @@ class User(Base):
     reset_tokens = relationship("PasswordResetToken", back_populates="user", cascade="all, delete-orphan")
     uploads = relationship("Upload", back_populates="user", cascade="all, delete-orphan")
     orders = relationship("Order", back_populates="user", cascade="all, delete-orphan")
+    business_assumptions = relationship("BusinessAssumptions", back_populates="user", uselist=False, cascade="all, delete-orphan")
 
 class PasswordResetToken(Base):
     __tablename__ = "password_reset_tokens"
@@ -88,3 +89,20 @@ class Order(Base):
 
     upload = relationship("Upload", back_populates="orders")
     user = relationship("User", back_populates="orders")
+
+class BusinessAssumptions(Base):
+    __tablename__ = "business_assumptions"
+
+    user_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    cogs_percent = Column(Float, default=60.0, nullable=False)
+    platform_fee_percent = Column(Float, default=10.0, nullable=False)
+    gst_low_rate = Column(Float, default=5.0, nullable=False)
+    gst_low_threshold = Column(Float, default=2500.0, nullable=False)
+    gst_high_rate = Column(Float, default=18.0, nullable=False)
+    shipping_tiers = Column(JSONB, default=[{"maxAmount": 500, "fee": 40}, {"maxAmount": 1000, "fee": 70}, {"fee": 100}], nullable=False)
+    return_loss_amount = Column(Float, default=140.0, nullable=False)
+    risk_tier_high = Column(Float, default=0.5, nullable=False)
+    risk_tier_medium = Column(Float, default=0.2, nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+    user = relationship("User", back_populates="business_assumptions")
