@@ -62,32 +62,23 @@ def predict_risk(df: pd.DataFrame) -> pd.DataFrame:
             input_df["Month"] = input_df.get("Month", 1)
             input_df["Day_Of_Week"] = input_df.get("Day_Of_Week", 0)
 
-    # Initialize columns for tracking fallbacks and encoded values
-    used_fallback_series = pd.Series(False, index=input_df.index)
-    encoded_category = []
-    encoded_ship_state = []
-    
-    # Pre-cache classes for O(1) membership check
-    cat_classes_set = set(category_encoder.classes_)
-    state_classes_set = set(ship_state_encoder.classes_)
+    # Pre-compute class-to-index mapping dicts for vectorized lookup
+    cat_map = {c: i for i, c in enumerate(category_encoder.classes_)}
+    state_map = {c: i for i, c in enumerate(ship_state_encoder.classes_)}
     
     # Process Category
-    for idx, val in input_df["Category"].items():
-        val_str = str(val).strip() if pd.notna(val) else ""
-        if val_str in cat_classes_set:
-            encoded_category.append(int(category_encoder.transform([val_str])[0]))
-        else:
-            encoded_category.append(CATEGORY_FALLBACK_VAL)
-            used_fallback_series.at[idx] = True
-            
+    cat_series = input_df["Category"].astype(str).str.strip()
+    encoded_category = cat_series.map(cat_map)
+    cat_unseen = encoded_category.isna()
+    encoded_category = encoded_category.fillna(CATEGORY_FALLBACK_VAL).astype(int).tolist()
+    
     # Process ship-state
-    for idx, val in input_df["ship-state"].items():
-        val_str = str(val).strip() if pd.notna(val) else ""
-        if val_str in state_classes_set:
-            encoded_ship_state.append(int(ship_state_encoder.transform([val_str])[0]))
-        else:
-            encoded_ship_state.append(SHIP_STATE_FALLBACK_VAL)
-            used_fallback_series.at[idx] = True
+    state_series = input_df["ship-state"].astype(str).str.strip()
+    encoded_ship_state = state_series.map(state_map)
+    state_unseen = encoded_ship_state.isna()
+    encoded_ship_state = encoded_ship_state.fillna(SHIP_STATE_FALLBACK_VAL).astype(int).tolist()
+    
+    used_fallback_series = cat_unseen | state_unseen
 
     # Prepare features matrix for inference
     X = pd.DataFrame(index=input_df.index)
