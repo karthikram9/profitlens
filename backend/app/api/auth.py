@@ -16,7 +16,7 @@ def set_refresh_cookie(response: Response, refresh_token: str):
         value=refresh_token,
         httponly=True,
         secure=True,
-        samesite="strict",
+        samesite="none",
         max_age=7 * 24 * 60 * 60  # 7 days
     )
 
@@ -56,7 +56,7 @@ def logout(response: Response):
         key="refresh_token",
         httponly=True,
         secure=True,
-        samesite="strict"
+        samesite="none"
     )
     return {"status": "ok"}
 
