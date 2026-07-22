@@ -77,6 +77,7 @@ export const KPIGrid: React.FC<KPIGridProps> = ({ kpis, isLoading }) => {
         value={formatPercent(kpis.returnRate.value)}
         deltaPercent={kpis.returnRate.deltaPercent ?? undefined}
         deltaDirection={kpis.returnRate.deltaDirection}
+        lowerIsBetter={true}
       />
     </div>
   );

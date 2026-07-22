@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 # ── Business constants (locked — do not change here; Module 8 owns config) ────
 COGS_RATE = 0.60
 PLATFORM_FEE_RATE = 0.10
-GST_RATE = 0.18
+GST_RATE = 0.18 # Kept for fallback, but dynamically calculated per row below
 RETURN_LOSS_INR = 140.0
 
 TIERED_SHIPPING_CANCELLED = 0.0
@@ -82,6 +82,17 @@ def _compute_shipping_cost(row: pd.Series) -> float:
         return TIERED_SHIPPING_MID
     else:
         return TIERED_SHIPPING_HIGH
+
+
+def _compute_gst(row: pd.Series) -> float:
+    """Tiered GST: 5% if price per unit <= ₹2,500, else 18%."""
+    amount = float(row.get("amount", 0) or 0)
+    qty = int(row.get("qty", 1) or 1)
+    if qty <= 0:
+        qty = 1
+    price_per_unit = amount / qty
+    rate = 0.05 if price_per_unit <= 2500 else 0.18
+    return amount * rate
 
 
 def _compute_return_loss(status: str) -> float:
@@ -187,7 +198,7 @@ def process_dataframe(
     # ── 5. Financial metrics ───────────────────────────────────────────────────
     df["estimated_cogs"] = df["amount"] * COGS_RATE
     df["platform_fee"] = df["amount"] * PLATFORM_FEE_RATE
-    df["gst"] = df["amount"] * GST_RATE
+    df["gst"] = df.apply(_compute_gst, axis=1)
     df["shipping_cost"] = df.apply(_compute_shipping_cost, axis=1)
     df["return_loss"] = df["status"].apply(_compute_return_loss)
     df["estimated_profit"] = (
@@ -201,31 +212,33 @@ def process_dataframe(
     df["return_flag"] = df["status"].apply(_compute_return_flag)
 
     # ── 6. Build output rows ───────────────────────────────────────────────────
+    # Using to_dict('records') instead of iterrows() for ~10x performance improvement
+    records = df.to_dict("records")
     rows: List[dict] = []
-    for _, row in df.iterrows():
+    for row in records:
         rows.append({
             "id": str(uuid.uuid4()),
             "upload_id": upload_id,
             "user_id": user_id,
             "order_id": str(row.get("order_id", "")).strip() or None,
-            "date": row["date_parsed"],
+            "date": row.get("date_parsed"),
             "status": str(row.get("status", "")).strip() or None,
             "fulfilment": str(row.get("fulfilment", "")).strip() or None,
             "ship_service_level": str(row.get("ship_service_level", "")).strip() or None,
             "category": str(row.get("category", "")).strip() or None,
             "sku": str(row.get("sku", "")).strip() or None,
             "qty": row.get("qty"),
-            "amount": float(row["amount"]),
-            "ship_state": str(row.get("ship_state", "")).strip() or None,
-            "ship_city": str(row.get("ship_city", "")).strip() or None,
+            "amount": float(row.get("amount", 0)),
+            "ship_state": str(row.get("ship_state", "")).strip().title() or None,
+            "ship_city": str(row.get("ship_city", "")).strip().title() or None,
             "b2b": row.get("b2b"),
-            "estimated_cogs": round(float(row["estimated_cogs"]), 4),
-            "platform_fee": round(float(row["platform_fee"]), 4),
-            "shipping_cost": round(float(row["shipping_cost"]), 4),
-            "gst": round(float(row["gst"]), 4),
-            "return_loss": round(float(row["return_loss"]), 4),
-            "estimated_profit": round(float(row["estimated_profit"]), 4),
-            "return_flag": int(row["return_flag"]),
+            "estimated_cogs": round(float(row.get("estimated_cogs", 0)), 4),
+            "platform_fee": round(float(row.get("platform_fee", 0)), 4),
+            "shipping_cost": round(float(row.get("shipping_cost", 0)), 4),
+            "gst": round(float(row.get("gst", 0)), 4),
+            "return_loss": round(float(row.get("return_loss", 0)), 4),
+            "estimated_profit": round(float(row.get("estimated_profit", 0)), 4),
+            "return_flag": int(row.get("return_flag", 0)),
             "risk_probability": None,   # filled by risk_scoring_service
             "used_fallback": None,      # filled by risk_scoring_service
         })

@@ -7,7 +7,8 @@
 - ML model: `return_risk_model_v5.joblib` (tuned XGBoost, scale_pos_weight, trained on Merchant-fulfilled orders only)
 - Encoders: `return_risk_encoders_v5.joblib` (LabelEncoders for `Category`, `ship-state`)
 - Model feature contract (order matters): `Category, Amount, Qty, ship-state, B2B, Month, Day_Of_Week, Price_Per_Unit`
-- Business cost assumptions: COGS 60%, Platform Fee 10%, GST 18%, tiered shipping, ₹140 return loss — all currently hardcoded; Module 8 makes these user-configurable without touching the model
+- Business cost assumptions: COGS 60%, Platform Fee 10%, GST 18%, tiered shipping, ₹140 return loss — all currently hardcoded; Module 8 makes these user-configurable without touching the model.
+  **⚠️ Correction identified via research (see HANDOFF.md "Business Assumption Accuracy Audit"): flat 18% GST is very likely wrong for this dataset.** Indian GST on garments is 5% for per-piece price ≤ ₹2,500 and 18% above — this dataset's ~₹649 average order value means most orders should be taxed at 5%, not 18%. This should be corrected to a price-tiered GST calculation (not a flat rate) as a priority fix, independent of and before Module 8's broader configurability work.
 
 **Assumed stack:**
 - Frontend: React + TypeScript + Tailwind CSS, shadcn/ui-style components
@@ -592,7 +593,7 @@ Build the authenticated `/upload` page and its backend pipeline: accept a seller
 The long-term vision is marketplace-independent: Amazon today, Flipkart/Meesho/Myntra later, all without rewriting the pipeline. That only works if column mapping is treated as a first-class, inspectable step now — not hardcoded Amazon column names sprinkled through later modules. This module is also where `preprocessing.py`, `feature_engineering.py`, and the return-risk model's Merchant-only scope decision (from the original ML work) get ported from standalone scripts into a reusable backend service, so they run once per upload instead of being re-derived by hand.
 
 ### 3. UI Components
-- **FileDropzone**: drag-and-drop + click-to-browse CSV upload, accepts `.csv` only, shows filename/size before submit, client-side size limit check (e.g. reject > 50MB with a clear message, configurable)
+- **FileDropzone**: drag-and-drop + click-to-browse CSV upload, accepts `.csv` only, shows filename/size before submit, client-side size limit check (reject > 200MB with a clear message — real seller exports covering a full year, not just a couple months, can run well past 50MB, so the limit needs real headroom; keep this as a single shared constant read by both frontend and backend, not a number duplicated in two places)
 - **UploadProgressBar**: multi-stage progress — Uploading → Detecting Schema → Awaiting Mapping Confirmation (if needed) → Processing → Ready — each stage a distinct visual state, not a single ambiguous spinner
 - **MarketplaceBadge**: shows detected marketplace ("Amazon — 94% confidence") once schema detection completes; shows "Unrecognized — manual mapping required" if confidence is below threshold
 - **ColumnMappingTable**: one row per required internal field, showing the auto-detected source column + a confidence indicator, with a Select dropdown to override the mapping manually; unmapped required fields are visually flagged (Badge: "Required — not mapped") and block continuation
@@ -760,8 +761,13 @@ BACKEND:
 
 FRONTEND:
 9. Build FileDropzone.tsx: drag-and-drop + click-to-browse, .csv only, client-side
-   size check (reject > 50MB with a clear inline message), calls POST /uploads on
-   drop/select.
+   size check (reject > 200MB with a clear inline message — define this as a single
+   shared constant, e.g. MAX_UPLOAD_SIZE_MB, imported wherever the check happens,
+   not a number copy-pasted separately on the frontend and backend). Also confirm
+   the backend (FastAPI/Starlette and Uvicorn both have their own default
+   request-body size limits) is configured to accept files up to the same limit —
+   a frontend-only bump does nothing if the server rejects the upload first. Calls
+   POST /uploads on drop/select.
 10. Build UploadProgressBar.tsx: five explicit stages (Uploading, Detecting Schema,
     Awaiting Mapping, Processing, Ready), driven by upload status polling — never a
     single ambiguous spinner.
@@ -1192,4 +1198,335 @@ FRONTEND:
 
 ---
 
-*Modules 7–8 to follow — each will be added to this document once the prior module is reviewed.*
+## Module 7 — Return Risk Tab & Recommendations Engine
+
+### 1. Objective
+Replace the Return Risk and Recommendations tab placeholders with real functionality, using the `risk_probability` / `used_fallback` fields already computed and stored on Merchant-fulfilled rows since Module 4/6. Return Risk answers "what's likely to come back?"; Recommendations answers "what should I actually do about it?" — with a reason, evidence, business impact, and suggested action, never a bare score.
+
+### 2. Purpose
+A risk score alone isn't actionable — this was the whole "not just prediction, better decisions" premise from the original vision. This module is where that premise gets built for real, and it's also where the Merchant-only scoping decision from the ML work becomes visible to the end user for the first time — sellers need to understand why some of their orders simply aren't scored, not have that silently hidden.
+
+### 3. UI Components
+- **RiskSummaryStatCards**: count/percentage of Merchant-fulfilled orders in High/Medium/Low risk tiers, average risk probability
+- **RiskHeatmap**: category × state grid, cell color intensity by average risk probability; cells below a minimum order-count threshold show "insufficient data" instead of a misleading average from 1-2 orders
+- **TopRiskyCategoriesCard / TopRiskyStatesCard**
+- **HighRiskOrdersTable**: paginated/sortable/searchable (same SQL-level pattern as Module 6's ProductsTable) — columns: Order ID, Category, Amount, State, Risk Probability, tier Badge; rows with `used_fallback: true` show a "Low confidence — unfamiliar category/state" Badge instead of presenting the score at full confidence
+- **RecommendationsList**: cards with Reason, Evidence, Business Impact, Suggested Action, Priority, Expected Improvement — per the original vision doc's exact framing, not a generic "high risk" label
+- **NotScoredExplainer**: a small, permanent, non-dismissible note on both tabs explaining that Amazon-fulfilled orders aren't scored, and why (no reliable return labels for that channel) — this is a transparency requirement, not optional copy
+
+### 4. User Experience
+1. Return Risk tab loads `RiskSummaryStatCards` and `RiskHeatmap` first (cheaper aggregates), `HighRiskOrdersTable` loads separately/paginated.
+2. `NotScoredExplainer` is visible on load, not buried — a seller should never wonder why some orders have no score without an answer right there.
+3. Recommendations tab shows `RecommendationsList`, generated from the same risk + profit aggregates already computed — no separate data pipeline.
+4. Clicking a heatmap cell filters `HighRiskOrdersTable` to that category/state combination (same cross-filter pattern as Module 6).
+
+### 5. Data Requirements
+
+**Risk tiers (explicit thresholds, not arbitrary):** High ≥ 0.5, Medium 0.2–0.5, Low < 0.2. Store these as named constants (`RISK_TIER_HIGH_THRESHOLD`, `RISK_TIER_MEDIUM_THRESHOLD`) — Module 8 makes them user-configurable, this module just needs them named and consistent everywhere they're used.
+
+**`GET /analytics/risk-overview`:**
+```
+{
+  tierCounts: {high, medium, low},   // Merchant-fulfilled orders only
+  avgRiskProbability: number,
+  scoredOrderCount: number, unscoredOrderCount: number,   // Amazon-fulfilled = unscored
+  topRiskyCategories: [{category, avgRisk, orderCount}, ...],
+  topRiskyStates: [{state, avgRisk, orderCount}, ...],
+  heatmap: [{category, state, avgRisk, orderCount, insufficientData: boolean}, ...]  // insufficientData true if orderCount < 5
+}
+```
+
+**`GET /analytics/risk-orders`** — SQL-paginated, same contract shape as Module 6's `GET /analytics/products` (page, pageSize, sortBy, sortOrder, search, category/state filters), rows include `usedFallback`.
+
+**Recommendations (rule-based, deterministic — no LLM call, consistent with Modules 5/6):** for each category with orderCount ≥ 5 (reuse the same minimum-sample rule as Module 6's inventory logic) AND avgRisk meaningfully above the dataset-wide average (e.g. by a defined margin, not any difference):
+```
+{
+  reason: "{category} has an average return-risk of {avgRisk}%, vs {datasetAvg}% overall",
+  evidence: "{orderCount} orders scored, {highRiskCount} in the High tier",
+  businessImpact: "Historical return loss in this category: ₹{category return_loss sum}",
+  suggestedAction: templated by category-agnostic action list (review sizing/description accuracy,
+                    reconsider pricing vs. category average, verify product images) — do not
+                    fabricate category-specific advice the data doesn't support,
+  priority: "High" if (risk gap is large AND order count is large) else "Medium",
+  expectedImprovement: a simple, transparent estimate (e.g. "reducing this category's return
+                        rate to the dataset average could save ~₹X in return losses"),
+    computed directly from real aggregates, not invented
+}
+```
+
+### 6. Folder Structure
+```
+frontend/src/pages/dashboard/tabs/
+├── ReturnRiskTab.tsx           # replaces Module 5 placeholder
+└── RecommendationsTab.tsx      # replaces Module 5 placeholder
+
+frontend/src/pages/dashboard/components/
+├── RiskSummaryStatCards.tsx
+├── RiskHeatmap.tsx
+├── TopRiskyCategoriesCard.tsx
+├── TopRiskyStatesCard.tsx
+├── HighRiskOrdersTable.tsx
+├── RecommendationsList.tsx
+└── NotScoredExplainer.tsx
+
+backend/app/
+├── api/
+│   └── analytics.py             # add GET /analytics/risk-overview, GET /analytics/risk-orders
+└── services/
+    ├── analytics_service.py      # extend with risk aggregates
+    └── recommendation_service.py # NEW — rule-based recommendation generation, kept separate
+                                    # from analytics_service since its logic (thresholds,
+                                    # templated text) is a distinct concern from raw aggregation
+```
+
+### 7. Implementation Order
+1. Define risk tier constants; extend `analytics_service.py` with tier counts + averages, verify against real data.
+2. `GET /analytics/risk-overview` (without heatmap first), `RiskSummaryStatCards.tsx`.
+3. Heatmap aggregation (with the insufficient-data suppression rule), `RiskHeatmap.tsx`.
+4. SQL-paginated risk-orders query, `GET /analytics/risk-orders`, `HighRiskOrdersTable.tsx`.
+5. `recommendation_service.py` rule logic, verified against real category numbers before building the UI.
+6. `RecommendationsList.tsx`, `NotScoredExplainer.tsx` (add to both tabs).
+7. Heatmap → table cross-filter last.
+8. Assemble `ReturnRiskTab.tsx` and `RecommendationsTab.tsx`, replacing Module 5 placeholders.
+
+### 8. AI Coding Instructions
+```
+Build Module 7 on top of Modules 1-6. Do not modify design tokens, UI primitives,
+authentication, or prior tabs. Use useDashboard() for shared state. Extend
+analytics_service.py for aggregates; put recommendation rule logic in a NEW
+recommendation_service.py, not folded into analytics_service.py, since it's templated
+text generation, not raw aggregation. import type for all interfaces. Never
+NodeJS.Timeout. Toast via existing service only.
+
+BACKEND:
+1. Define risk tier thresholds as named constants (High >= 0.5, Medium 0.2-0.5,
+   Low < 0.2) in a shared location analytics_service.py can import.
+2. Add tier-count, average-risk, and scored/unscored-count aggregates over
+   Merchant-fulfilled orders (risk_probability IS NOT NULL) for the current
+   upload — never include Amazon-fulfilled (null risk_probability) rows as if
+   they were "Low risk"; they are unscored, a distinct state.
+3. Add heatmap aggregation: category x state, avg risk_probability, order count;
+   mark insufficientData: true for any cell with orderCount < 5 rather than
+   computing and displaying an average from a tiny, noisy sample.
+4. Implement GET /analytics/risk-overview per Module 7 Section 5's response shape.
+5. Implement GET /analytics/risk-orders as a SQL-level paginated/sortable/
+   searchable query (same pattern as Module 6's products endpoint — GROUP BY/
+   WHERE/LIMIT/OFFSET at the database layer, never pandas-in-memory pagination).
+6. Create recommendation_service.py: for each category with orderCount >= 5 AND
+   avgRisk exceeding the dataset-wide average by a defined margin, generate a
+   recommendation object with reason, evidence, businessImpact, suggestedAction
+   (from a fixed, category-agnostic action list — do not fabricate
+   category-specific claims the data doesn't support), priority, and
+   expectedImprovement — all computed from real aggregates already available,
+   nothing invented. No LLM/external AI call in this module.
+
+FRONTEND:
+7. Build RiskSummaryStatCards.tsx, RiskHeatmap.tsx (with insufficient-data cells
+   visually distinct, e.g. hatched/greyed, not just a misleading pale color),
+   TopRiskyCategoriesCard.tsx, TopRiskyStatesCard.tsx — each independently loading.
+8. Build HighRiskOrdersTable.tsx per Module 6's ProductsTable pattern
+   (server-side pagination/sort/search); rows with usedFallback show a
+   "Low confidence — unfamiliar category/state" Badge.
+9. Build RecommendationsList.tsx rendering each recommendation's six fields as a
+   card — reason, evidence, impact, action, priority, expected improvement — never
+   collapsing this down to just a risk score or a bare "High Risk" label.
+10. Build NotScoredExplainer.tsx: a permanent, visible (not collapsed/dismissed by
+    default) explanation that Amazon-fulfilled orders aren't scored because
+    reliable return labels don't exist for that fulfilment channel. Place on both
+    ReturnRiskTab and RecommendationsTab.
+11. Wire heatmap-cell-click -> HighRiskOrdersTable cross-filter, same pattern as
+    Module 6.
+12. Assemble ReturnRiskTab.tsx and RecommendationsTab.tsx, replacing their Module 5
+    placeholders in routing.
+```
+
+### 9. Acceptance Criteria
+- [ ] Amazon-fulfilled orders never appear counted as "Low risk" — they're excluded from tier counts entirely and shown as a distinct "unscored" count.
+- [ ] Heatmap cells with fewer than 5 orders show "insufficient data," not a computed average.
+- [ ] `GET /analytics/risk-orders` pagination/sort/search verified server-side (check the query, not just the response shape).
+- [ ] Every recommendation card shows all six fields (reason/evidence/impact/action/priority/expected improvement) — never just a score or tier label.
+- [ ] Recommendations only appear for categories meeting the minimum order-count threshold — no recommendation generated from a tiny, noisy sample.
+- [ ] `NotScoredExplainer` is visible without user action on both tabs.
+- [ ] Rows with `used_fallback: true` show the low-confidence badge, not a bare score presented at full confidence.
+- [ ] No regression to Modules 1-6.
+
+### 10. Common Mistakes
+- Treating Amazon-fulfilled (null `risk_probability`) rows as "Low risk" instead of "unscored" — this silently reintroduces the exact label-quality problem the original ML work's Merchant-only scoping was designed to avoid.
+- Computing a heatmap average from a cell with 1-2 orders and displaying it with the same visual confidence as a cell with hundreds — always apply the insufficient-data suppression.
+- Generating a recommendation that states a specific root cause ("sizing issues") the data doesn't actually show — stick to what's supported by the aggregates (risk level, order volume, historical loss), suggest generic-but-relevant actions, don't fabricate specific causal claims.
+- Hiding or making `NotScoredExplainer` a dismissible one-time tooltip — it needs to be a standing, always-visible explanation since it's core to interpreting the whole tab correctly.
+- Reusing Module 6's `ProductsTable` component as-is instead of building `HighRiskOrdersTable` with its own confidence-badge logic — the two tables look similar but have a real behavioral difference (fallback badges) that a copy-paste reuse would miss.
+
+### 11. Future Enhancements
+- SHAP-based per-order explainability (mentioned in the original vision doc), once the product has traction to justify the added complexity.
+- User-configurable risk tier thresholds and recommendation-priority rules (Module 8 Settings).
+- Product-level (not just category-level) recommendations, once category-level proves useful.
+
+### 12. Deliverables
+- `GET /analytics/risk-overview`, `GET /analytics/risk-orders` endpoints
+- `recommendation_service.py` (new, separate from `analytics_service.py`)
+- `ReturnRiskTab.tsx`, `RecommendationsTab.tsx` fully replacing Module 5 placeholders
+- `RiskSummaryStatCards.tsx`, `RiskHeatmap.tsx`, `TopRiskyCategoriesCard.tsx`, `TopRiskyStatesCard.tsx`, `HighRiskOrdersTable.tsx`, `RecommendationsList.tsx`, `NotScoredExplainer.tsx`
+
+---
+
+## Module 8 — Settings, Report Export & Data Health
+
+### 1. Objective
+Make the business cost assumptions (COGS%, platform fee%, GST tiering, shipping tiers, return loss amount) and risk tier thresholds user-configurable without touching the ML model; add PDF/Excel/CSV report export; build the Data Health tab surfacing upload/data-quality metadata already captured during Module 4 processing.
+
+### 2. Purpose
+Every cost assumption in this product has been a fixed, hardcoded default up to this point — including the GST rate that was just corrected from a flat 18% to a price-tiered 5%/18%. Real sellers' actual costs vary (different COGS margins, different GST thresholds if rules change again, different negotiated shipping rates), so the defaults need to become a starting point the seller can adjust, not a permanent ceiling on accuracy. Report Export and Data Health close out the original 6-page product vision.
+
+### 3. UI Components
+- **SettingsForm**: editable fields for COGS %, Platform Fee %, GST (low rate, low-rate threshold, high rate — reflecting the corrected tiered structure), shipping tiers (amount breakpoints + fee per tier), Return Loss amount, risk tier thresholds — each with the current default pre-filled and a "Reset to default" option
+- **RecomputeWarningModal**: shown on Save — explains that saving will recompute all profit/risk figures for the current dataset using the new assumptions, with a confirm/cancel choice
+- **RecomputeProgressModal**: reuses Module 4's progress-stage pattern while recomputation runs
+- **ExportPage**: three actions — Download PDF (executive summary), Download Excel (processed data + category summary sheets), Download CSV (raw processed orders) — each with its own loading state, since generation isn't instant
+- **DataHealthTab**: Data Completeness Score stat card (simple, transparent formula, not a black box), exclusion reasons list (reusing Module 4's stored metadata), categories found, schema mapping confidence, duplicate/missing-field counts
+
+### 4. User Experience
+1. User opens Settings, sees current values (defaults, or previously saved custom values) pre-filled in every field.
+2. Changes a value (e.g. COGS from 60% to 55%) → Save → `RecomputeWarningModal` explains this will recalculate the dashboard → confirms → `RecomputeProgressModal` shows while the pipeline re-runs on the existing raw data with new assumptions → returns to Settings (or redirects to Overview) with a success Toast once done.
+3. User visits Export, clicks Download PDF → button shows a loading state → browser downloads the file once generated (no silent failure — an error Toast if generation fails).
+4. User visits Data Health, sees the same exclusion/quality information that was shown once during upload (Module 4's `FileSummaryCard`), now persistently available rather than only visible right after upload.
+
+### 5. Data Requirements
+
+**`business_assumptions` table** (one row per user, defaults on first access):
+```
+user_id UUID PRIMARY KEY REFERENCES users(id)
+cogs_percent FLOAT DEFAULT 60.0
+platform_fee_percent FLOAT DEFAULT 10.0
+gst_low_rate FLOAT DEFAULT 5.0
+gst_low_threshold FLOAT DEFAULT 2500.0   -- per-unit price threshold; corrected per the GST audit
+gst_high_rate FLOAT DEFAULT 18.0
+shipping_tiers JSONB DEFAULT '[{"maxAmount":500,"fee":40},{"maxAmount":1000,"fee":70},{"fee":100}]'
+return_loss_amount FLOAT DEFAULT 140.0
+risk_tier_high FLOAT DEFAULT 0.5
+risk_tier_medium FLOAT DEFAULT 0.2
+updated_at TIMESTAMPTZ
+```
+
+**Recompute, not live-compute:** Estimated Profit and risk tiers are computed once at upload-processing time and stored on `orders` rows (per Module 4/6), not calculated on-the-fly per query. Changing assumptions in Settings must **re-run the existing Module 4 processing pipeline** (`data_processing_service.py` + `risk_scoring_service.py`) against the current upload's already-mapped raw data, using the new assumption values, and overwrite the stored `orders` rows — reusing the exact same pipeline Module 4 built, not a second parallel computation path.
+
+**API endpoints:**
+- `GET /settings/business-assumptions`, `PUT /settings/business-assumptions` (validates ranges — e.g. percentages between 0-100, `gst_low_threshold` > 0)
+- `POST /uploads/{uploadId}/recompute` — re-runs processing with current settings, same status-polling contract as `confirm-mapping` (`uploaded → processing → ready/failed`)
+- `GET /export/pdf`, `GET /export/excel`, `GET /export/csv` — generate and stream the file; PDF/Excel reuse the same aggregate functions from `analytics_service.py` (executive summary = KPIs + Overview's rule-based insights + generation timestamp), not a separate report-specific data pipeline
+- `GET /data-health` — returns the current upload's stored exclusion metadata (from `uploads.error_message` JSON, per Module 4's implementation) plus a computed completeness score
+
+**Completeness score (simple, transparent, not a black box):**
+```
+completeness = (row_count_processed / row_count_raw) * 100
+```
+displayed alongside the raw exclusion reasons, not replacing them — the score is a summary, the reasons are the explanation.
+
+### 6. Folder Structure
+```
+frontend/src/pages/settings/
+├── SettingsPage.tsx
+├── SettingsForm.tsx
+├── RecomputeWarningModal.tsx
+└── RecomputeProgressModal.tsx
+
+frontend/src/pages/export/
+└── ExportPage.tsx
+
+frontend/src/pages/dashboard/tabs/
+└── DataHealthTab.tsx           # replaces Module 5 placeholder
+
+backend/app/
+├── api/
+│   ├── settings.py              # GET/PUT business-assumptions, POST recompute
+│   └── export.py                # GET pdf/excel/csv
+├── models/
+│   └── settings.py               # Pydantic schema
+└── services/
+    ├── settings_service.py
+    ├── export_service.py         # PDF/Excel/CSV generation, reusing analytics_service functions
+    └── data_processing_service.py  # MODIFY: accept assumption overrides instead of hardcoded constants
+```
+
+### 7. Implementation Order
+1. `business_assumptions` table + migration, with defaults matching the now-corrected values (GST tiered 5%/2500/18%, not flat 18%).
+2. Modify `data_processing_service.py` to accept assumption values as parameters instead of hardcoded constants — verify existing Module 4/6 behavior is unchanged when defaults are passed in (no silent regression).
+3. `GET`/`PUT /settings/business-assumptions`, `SettingsForm.tsx`.
+4. `POST /uploads/{uploadId}/recompute` reusing the modified pipeline; `RecomputeWarningModal.tsx`, `RecomputeProgressModal.tsx`.
+5. `GET /data-health` (straightforward — mostly surfacing existing stored metadata), `DataHealthTab.tsx`.
+6. `export_service.py` + the three export endpoints, `ExportPage.tsx` last (lowest-risk, most self-contained piece).
+
+### 8. AI Coding Instructions
+```
+Build Module 8 on top of Modules 1-7. Do not modify design tokens, UI primitives,
+authentication, or prior tabs. import type for interfaces. Never NodeJS.Timeout.
+Toast via existing service only.
+
+BACKEND:
+1. Add business_assumptions table + migration with the defaults in Module 8
+   Section 5 (GST tiered 5%/₹2500 threshold/18% — matching the correction already
+   applied in data_processing_service.py, not the old flat 18%).
+2. Refactor data_processing_service.py's cost calculations to accept an
+   assumptions object as a parameter (falling back to the table's defaults if
+   none provided) instead of hardcoded constants. Run the existing Module 6
+   acceptance-criteria checks again after this refactor to confirm no regression
+   — this touches the most business-critical code in the product.
+3. Implement GET/PUT /settings/business-assumptions with range validation
+   (percentages 0-100, gst_low_threshold > 0, shipping tier amounts ascending).
+4. Implement POST /uploads/{uploadId}/recompute: re-run data_processing_service
+   and risk_scoring_service against the upload's already-staged/mapped raw data
+   using the user's current saved assumptions, overwrite the orders rows (same
+   delete-then-bulk-insert pattern as Module 4/6), update Upload status through
+   the same processing/ready/failed states POST /confirm-mapping already uses.
+5. Implement GET /data-health: parse the current upload's stored metadata JSON
+   (from Module 4's uploads.error_message field) and compute completeness =
+   row_count_processed / row_count_raw * 100.
+6. Implement export_service.py and GET /export/pdf, /export/excel, /export/csv,
+   reusing analytics_service.py's existing aggregate functions (do not
+   re-implement profit/category calculations separately for exports — that
+   creates a second source of truth that can drift from the dashboard's numbers).
+
+FRONTEND:
+7. Build SettingsForm.tsx with all fields pre-filled from GET
+   /settings/business-assumptions, client-side validation matching the backend's
+   range rules, and a "Reset to default" action per field or for the whole form.
+8. Build RecomputeWarningModal.tsx (confirm/cancel) and
+   RecomputeProgressModal.tsx (reusing Module 4's progress-stage visual pattern)
+   triggered on Settings Save.
+9. Build DataHealthTab.tsx consuming GET /data-health, replacing its Module 5
+   placeholder — show the completeness score AND the raw exclusion reasons
+   together, never the score alone.
+10. Build ExportPage.tsx with three independently-loading download actions,
+    each showing its own loading state and an error Toast on failure.
+```
+
+### 9. Acceptance Criteria
+- [ ] Changing an assumption in Settings and saving actually changes the Estimated Profit / risk figures shown on Overview and Profit Analytics after recompute completes.
+- [ ] Saving without confirming the recompute warning does NOT silently recompute — the modal is a real gate, not a formality.
+- [ ] `PUT /settings/business-assumptions` rejects out-of-range values (e.g. negative percentages) with a clear error, not a silent clamp or crash.
+- [ ] All three export downloads succeed and contain real, current data — not stale/cached figures from before a recompute.
+- [ ] Data Health's completeness score and exclusion reasons are consistent with what Module 4 originally reported for that upload — no drift between the two.
+- [ ] Refactoring `data_processing_service.py` for configurable assumptions causes zero regression against Module 4 and Module 6's existing acceptance criteria when defaults are used.
+
+### 10. Common Mistakes
+- Building a live/on-the-fly cost calculation path for Settings instead of reusing the recompute-and-store pattern — creates two different ways profit gets calculated in the same product, which will drift.
+- Re-implementing profit/category aggregation separately inside `export_service.py` instead of reusing `analytics_service.py` — guarantees the exported report's numbers will eventually disagree with the live dashboard's.
+- Skipping the recompute-warning confirmation step "since it's just a settings change" — recompute is a real, potentially slow operation on the full dataset; the user needs to know it's happening.
+- Letting the Data Health completeness score replace the detailed exclusion reasons instead of showing both — a single number without the "why" isn't actually health information.
+
+### 11. Future Enhancements
+- Per-category (not just global) cost assumption overrides, once global configurability proves useful.
+- Scheduled/automatic recompute if assumptions change infrequently but data updates often.
+- Multi-format executive summary customization (choosing which sections to include in PDF export).
+
+### 12. Deliverables
+- `business_assumptions` table + migration, with corrected GST-tiered defaults
+- `data_processing_service.py` refactored to accept assumption overrides, verified against no regression
+- `GET`/`PUT /settings/business-assumptions`, `POST /uploads/{uploadId}/recompute`
+- `GET /export/pdf`, `/export/excel`, `/export/csv` + `export_service.py`
+- `GET /data-health` + `DataHealthTab.tsx` replacing its Module 5 placeholder
+- `SettingsPage.tsx`, `SettingsForm.tsx`, `RecomputeWarningModal.tsx`, `RecomputeProgressModal.tsx`, `ExportPage.tsx`
+
+---
+
+*This completes the 8-module SOP. All modules 1–8 are now specified.*

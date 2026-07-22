@@ -4,7 +4,7 @@ import { Skeleton } from '../../../components/ui/Skeleton';
 import type { CategoryProfitRow } from '../types/profitAnalytics';
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis,
-  CartesianGrid, Tooltip, Legend,
+  CartesianGrid, Tooltip, Legend, Cell
 } from 'recharts';
 
 interface CategoryProfitChartProps {
@@ -127,12 +127,18 @@ export const CategoryProfitChart: React.FC<CategoryProfitChartProps> = ({
             <Bar
               dataKey="profit"
               name="Est. Profit"
-              fill="var(--color-success)"
-              opacity={selectedCategory ? 0.6 : 0.85}
               radius={[4, 4, 0, 0]}
               cursor="pointer"
               onClick={(_, index) => handleBarClick(chartData[index])}
-            />
+            >
+              {chartData.map((entry, index) => (
+                <Cell
+                  key={`cell-${index}`}
+                  fill={entry.profit < 0 ? 'var(--color-danger)' : 'var(--color-success)'}
+                  opacity={selectedCategory ? (selectedCategory === entry.category ? 1 : 0.4) : 0.85}
+                />
+              ))}
+            </Bar>
           </BarChart>
         </ResponsiveContainer>
       </div>

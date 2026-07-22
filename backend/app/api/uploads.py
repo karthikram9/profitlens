@@ -48,7 +48,16 @@ router = APIRouter()
 STAGING_DIR = Path(__file__).resolve().parent.parent.parent / "tmp" / "uploads"
 STAGING_DIR.mkdir(parents=True, exist_ok=True)
 
-MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024  # 50 MB
+# Read MAX_UPLOAD_SIZE_MB from shared_config.json
+SHARED_CONFIG_PATH = Path(__file__).resolve().parent.parent.parent.parent.parent / "shared_config.json"
+try:
+    with open(SHARED_CONFIG_PATH, "r") as f:
+        shared_config = json.load(f)
+    _max_mb = shared_config.get("MAX_UPLOAD_SIZE_MB", 200)
+except Exception:
+    _max_mb = 200
+
+MAX_FILE_SIZE_BYTES = _max_mb * 1024 * 1024
 PREVIEW_ROW_COUNT = 20
 
 
@@ -94,7 +103,7 @@ async def create_upload(
     if len(raw_bytes) > MAX_FILE_SIZE_BYTES:
         raise HTTPException(
             status_code=400,
-            detail=f"File exceeds the 50 MB limit ({len(raw_bytes) // (1024*1024)} MB uploaded).",
+            detail=f"File exceeds the {_max_mb} MB limit ({len(raw_bytes) // (1024*1024)} MB uploaded).",
         )
 
     # ── 3. Decode and parse CSV headers + preview ──────────────────────────────

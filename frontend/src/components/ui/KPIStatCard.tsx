@@ -9,6 +9,7 @@ export interface KPIStatCardProps {
   unit?: string;
   deltaPercent?: number;
   deltaDirection?: 'up' | 'down' | 'neutral';
+  lowerIsBetter?: boolean;
   sparklineSlot?: React.ReactNode;
   className?: string;
 }
@@ -19,12 +20,16 @@ export const KPIStatCard: React.FC<KPIStatCardProps> = ({
   unit,
   deltaPercent,
   deltaDirection = 'neutral',
+  lowerIsBetter = false,
   sparklineSlot,
   className,
 }) => {
   const isUp = deltaDirection === 'up';
   const isDown = deltaDirection === 'down';
   const isNeutral = deltaDirection === 'neutral';
+
+  const isGood = lowerIsBetter ? isDown : isUp;
+  const isBad = lowerIsBetter ? isUp : isDown;
 
   return (
     <Card className={cn("p-md", className)}>
@@ -48,8 +53,8 @@ export const KPIStatCard: React.FC<KPIStatCardProps> = ({
             <div
               className={cn(
                 "flex items-center text-xs font-bold px-sm py-[2px] rounded-full border",
-                isUp && "bg-success-bg border-success/20 text-success",
-                isDown && "bg-danger-bg border-danger/20 text-danger",
+                isGood && "bg-success-bg border-success/20 text-success",
+                isBad && "bg-danger-bg border-danger/20 text-danger",
                 isNeutral && "bg-bg border-border text-text-muted"
               )}
             >

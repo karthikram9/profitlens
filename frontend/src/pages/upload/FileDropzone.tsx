@@ -5,7 +5,9 @@ interface FileDropzoneProps {
   isDisabled?: boolean;
 }
 
-const MAX_SIZE_MB = 50;
+import sharedConfig from '../../../../shared_config.json';
+
+const MAX_SIZE_MB = sharedConfig.MAX_UPLOAD_SIZE_MB || 200;
 const MAX_SIZE_BYTES = MAX_SIZE_MB * 1024 * 1024;
 
 export const FileDropzone: React.FC<FileDropzoneProps> = ({ onFileSelected, isDisabled = false }) => {
@@ -101,7 +103,7 @@ export const FileDropzone: React.FC<FileDropzoneProps> = ({ onFileSelected, isDi
         <div className="w-full rounded-md bg-danger/10 border border-danger/30 px-md py-sm text-sm text-danger text-center">
           {sizeError}
         </div>
-      )}
+      )} 
     </div>
   );
 };
