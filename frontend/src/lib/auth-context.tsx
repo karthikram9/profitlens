@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
-import { apiRequest, setAuthTokenCallback } from './api-client';
+import { apiRequest, setAuthToken } from './api-client';
 
 interface User {
   id: string;
@@ -23,26 +23,28 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [accessToken, setAccessTokenState] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
-  // Sync token to api-client
-  useEffect(() => {
-    setAuthTokenCallback(() => accessToken);
-  }, [accessToken]);
+  const updateAccessToken = (token: string | null) => {
+    setAuthToken(token);
+    setAccessTokenState(token);
+  };
 
   const fetchUser = useCallback(async (token: string) => {
     try {
+      setAuthToken(token);
       const userData = await apiRequest<User>('/auth/me', {
         headers: { Authorization: `Bearer ${token}` }
       });
       setUser(userData);
-      setAccessTokenState(token);
+      updateAccessToken(token);
     } catch (err) {
       setUser(null);
-      setAccessTokenState(null);
+      updateAccessToken(null);
     }
   }, []);
 
   const login = async (token: string) => {
     setIsLoading(true);
+    updateAccessToken(token);
     await fetchUser(token);
     setIsLoading(false);
   };
@@ -54,7 +56,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       // Ignore errors on logout
     }
     setUser(null);
-    setAccessTokenState(null);
+    updateAccessToken(null);
   };
 
   useEffect(() => {
@@ -62,9 +64,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const initAuth = async () => {
       try {
         const data = await apiRequest<{ access_token: string }>('/auth/refresh', { method: 'POST' });
+        updateAccessToken(data.access_token);
         await fetchUser(data.access_token);
       } catch (err) {
         // No valid refresh token
+        updateAccessToken(null);
       } finally {
         setIsLoading(false);
       }
@@ -73,7 +77,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, [fetchUser]);
 
   return (
-    <AuthContext.Provider value={{ user, accessToken, isLoading, login, logout, setAccessToken: setAccessTokenState }}>
+    <AuthContext.Provider value={{ user, accessToken, isLoading, login, logout, setAccessToken: updateAccessToken }}>
       {children}
     </AuthContext.Provider>
   );

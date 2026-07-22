@@ -20,11 +20,15 @@ interface DashboardContextType {
 const DashboardContext = createContext<DashboardContextType | undefined>(undefined);
 
 export const DashboardProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { user } = useAuth();
+  const { user, isLoading: authLoading } = useAuth();
   const [currentUpload, setCurrentUpload] = useState<CurrentUpload | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
 
   const fetchCurrentUpload = useCallback(async () => {
+    if (authLoading) {
+      return;
+    }
+
     if (!user) {
       setCurrentUpload(null);
       setIsLoading(false);
@@ -41,11 +45,14 @@ export const DashboardProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     } finally {
       setIsLoading(false);
     }
-  }, [user]);
+  }, [authLoading, user]);
+
+  const userId = user?.id;
 
   useEffect(() => {
+    if (authLoading) return;
     fetchCurrentUpload();
-  }, [fetchCurrentUpload]);
+  }, [authLoading, userId, fetchCurrentUpload]);
 
   return (
     <DashboardContext.Provider value={{ currentUpload, isLoading, refreshDashboard: fetchCurrentUpload }}>

@@ -20,15 +20,18 @@ export class ApiError extends Error {
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string) || 'http://localhost:8000';
 
-export let getAuthToken: () => string | null = () => null;
-let isRefreshing = false;
-let refreshSubscribers: ((token: string) => void)[] = [];
+let authToken: string | null = null;
 
-export const setAuthTokenCallback = (fn: () => string | null) => {
-  getAuthToken = fn;
+export const setAuthToken = (token: string | null) => {
+  authToken = token;
+};
+
+export const getAuthToken = (): string | null => {
+  return authToken;
 };
 
 const onRefreshed = (token: string) => {
+  setAuthToken(token);
   refreshSubscribers.forEach((callback) => callback(token));
   refreshSubscribers = [];
 };

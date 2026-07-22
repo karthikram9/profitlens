@@ -1,3 +1,4 @@
+import os
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
@@ -27,14 +28,16 @@ app.include_router(export_router, prefix="/export", tags=["export"])
 app.include_router(data_health_router, prefix="/data-health", tags=["data-health"])
 
 
-# CORS middleware configuration to allow frontend origin
+# CORS middleware configuration
+# In local dev (ENVIRONMENT unset), only localhost origins are allowed.
+# In production, FRONTEND_URL env var must be set to the exact deployed frontend URL.
+_LOCAL_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"]
+_FRONTEND_URL = os.getenv("FRONTEND_URL", "").strip()
+_ALLOWED_ORIGINS = ([_FRONTEND_URL] + _LOCAL_ORIGINS) if _FRONTEND_URL else _LOCAL_ORIGINS
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "https://profitlens-silk.vercel.app",
-    ],
+    allow_origins=_ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

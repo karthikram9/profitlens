@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Response, Request
 from sqlalchemy.orm import Session
+import os
 from app.db.session import get_db
 from app.models.user import UserCreate, UserLogin, TokenPair, ForgotPasswordRequest, ResetPasswordRequest, UserPublic
 from app.services.auth_service import auth_service
@@ -8,6 +9,8 @@ from app.core.security import decode_token, create_access_token
 from app.core.rate_limit import rate_limit
 from app.db.models import User
 
+_IS_PRODUCTION = os.getenv("ENVIRONMENT", "development") == "production"
+
 router = APIRouter()
 
 def set_refresh_cookie(response: Response, refresh_token: str):
@@ -15,8 +18,8 @@ def set_refresh_cookie(response: Response, refresh_token: str):
         key="refresh_token",
         value=refresh_token,
         httponly=True,
-        secure=True,
-        samesite="none",
+        secure=_IS_PRODUCTION,
+        samesite="none" if _IS_PRODUCTION else "lax",
         max_age=7 * 24 * 60 * 60  # 7 days
     )
 
@@ -55,8 +58,8 @@ def logout(response: Response):
     response.delete_cookie(
         key="refresh_token",
         httponly=True,
-        secure=True,
-        samesite="none"
+        secure=_IS_PRODUCTION,
+        samesite="none" if _IS_PRODUCTION else "lax"
     )
     return {"status": "ok"}
 

@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { apiRequest } from '../../lib/api-client';
+import { useDashboard } from '../../lib/dashboard-context';
 import { toast } from '../../components/ui/Toast';
 import { FileDropzone } from './FileDropzone';
 import { UploadProgressBar } from './UploadProgressBar';
@@ -33,11 +34,12 @@ interface UploadInitResponse {
 
 export const UploadPage: React.FC = () => {
   const navigate = useNavigate();
+  const { currentUpload } = useDashboard();
 
   const [stage, setStage] = useState<UploadStage>('idle');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   
-  const [hasExistingData, setHasExistingData] = useState(false);
+  const hasExistingData = currentUpload?.status === 'ready';
   const [showOverwriteWarning, setShowOverwriteWarning] = useState(false);
   
   const [uploadId, setUploadId] = useState<string | null>(null);
@@ -47,21 +49,6 @@ export const UploadPage: React.FC = () => {
   
   const [summaryData, setSummaryData] = useState<FileSummaryData | null>(null);
   const [exclusionReasons, setExclusionReasons] = useState<ExclusionReason[]>([]);
-
-  // 1. Check for existing upload on mount
-  useEffect(() => {
-    const checkCurrent = async () => {
-      try {
-        const current = await apiRequest<any>('/uploads/current');
-        if (current && current.status === 'ready') {
-          setHasExistingData(true);
-        }
-      } catch (err) {
-        // Ignore, maybe no active upload
-      }
-    };
-    checkCurrent();
-  }, []);
 
   // 2. Handle File Drop
   const handleFileSelected = async (file: File) => {
