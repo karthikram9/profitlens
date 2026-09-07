@@ -27,10 +27,13 @@ from app.db import models
 
 target_metadata = Base.metadata
 
+
 def get_url():
     import os
-    return os.environ.get("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/profitlens")
-
+    database_url = os.environ.get("DATABASE_URL")
+    if not database_url:
+        raise RuntimeError("DATABASE_URL is not set")
+    return database_url
 # other values from the config, defined by the needs of env.py,
 # can be acquired:
 # my_important_option = config.get_main_option("my_important_option")

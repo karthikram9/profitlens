@@ -31,7 +31,14 @@ app.include_router(data_health_router, prefix="/data-health", tags=["data-health
 # CORS middleware configuration
 # In local dev (ENVIRONMENT unset), only localhost origins are allowed.
 # In production, FRONTEND_URL env var must be set to the exact deployed frontend URL.
-_LOCAL_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"]
+_LOCAL_ORIGINS = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:5174",
+    "http://127.0.0.1:5174",
+    "http://localhost:5175",
+    "http://127.0.0.1:5175",
+]
 _FRONTEND_URL = os.getenv("FRONTEND_URL", "").strip()
 _ALLOWED_ORIGINS = ([_FRONTEND_URL] + _LOCAL_ORIGINS) if _FRONTEND_URL else _LOCAL_ORIGINS
 
