@@ -158,11 +158,11 @@ export const UploadPage: React.FC = () => {
           toast.error('Processing failed');
         } else {
           // Continue polling
-          timeoutId = setTimeout(pollStatus, 2000);
+         timeoutId = setTimeout(pollStatus, 5000);
         }
       } catch (err) {
         // If polling fails, assume temporary network issue and retry
-        timeoutId = setTimeout(pollStatus, 3000);
+        timeoutId = setTimeout(pollStatus, 5000);
       }
     };
 
